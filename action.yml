@@ -1,30 +1,25 @@
 name: Expo Deploy Action
-description: Triggers an EAS build/submit (or a JS-only OTA update) for an Expo app using the official Expo GitHub Action
+description: Runs a single EAS build or submit for one platform, waiting for it to finish so the job status reflects the real result
 
 inputs:
   expo-token:
     description: "Expo access token used to authenticate the EAS CLI (a robot token is recommended). Composite actions cannot read secrets, so pass it explicitly from the caller"
     required: true
-  platform:
-    description: "Platform to build: ios, android or all"
+  command:
+    description: "What to run: build or submit"
     required: false
-    default: "all"
+    default: "build"
+  platform:
+    description: "Single platform: android or ios"
+    required: true
   profile:
-    description: "EAS build profile from eas.json. With auto-submit enabled, the submit profile with the same name is used"
+    description: "EAS build/submit profile from eas.json"
     required: false
     default: "production"
-  auto-submit:
-    description: "Auto-submit the build to the stores on success (eas build --auto-submit). Android goes to the track configured in the submit profile; iOS lands in TestFlight"
+  build-id:
+    description: "EAS build id to submit (required when command=submit)"
     required: false
-    default: "true"
-  ota:
-    description: "Publish a JS-only over-the-air update (eas update) instead of running a full build. Requires expo-updates configured in the app. Fingerprint-based build-or-update is a Phase 3 enhancement"
-    required: false
-    default: "false"
-  no-wait:
-    description: "Exit as soon as the build is queued on EAS instead of blocking the runner until it finishes. Note: with no-wait, an EAS build failure will not fail the workflow"
-    required: false
-    default: "true"
+    default: ""
   eas-version:
     description: "EAS CLI version to install"
     required: false
@@ -34,6 +29,11 @@ inputs:
     required: false
     default: "."
 
+outputs:
+  build-id:
+    description: "The EAS build id produced by a build command (empty for submit)"
+    value: ${{ steps.build.outputs.build-id }}
+
 runs:
   using: composite
   steps:
@@ -41,12 +41,16 @@ runs:
       shell: bash
       run: |
         case "${{ inputs.platform }}" in
-          ios|android|all) ;;
-          *)
-            echo "::error::platform must be ios, android or all (got: ${{ inputs.platform }})"
-            exit 1
-            ;;
+          android|ios) ;;
+          *) echo "::error::platform must be android or ios (got: ${{ inputs.platform }})"; exit 1 ;;
         esac
+        case "${{ inputs.command }}" in
+          build|submit) ;;
+          *) echo "::error::command must be build or submit (got: ${{ inputs.command }})"; exit 1 ;;
+        esac
+        if [ "${{ inputs.command }}" = "submit" ] && [ -z "${{ inputs.build-id }}" ]; then
+          echo "::error::command=submit requires build-id"; exit 1
+        fi
 
     - name: Setup EAS CLI
       uses: expo/expo-github-action@v8
@@ -54,40 +58,44 @@ runs:
         eas-version: ${{ inputs.eas-version }}
         token: ${{ inputs.expo-token }}
 
-    # OTA mode: publish a JS-only over-the-air update (no store review).
-    # NOTE: implemented as a shell step, not the continuous-deploy-fingerprint
-    # sub-action, because a composite action resolves every `uses:` at job
-    # setup regardless of `if:` — referencing a non-existent sub-action there
-    # fails the whole job. Fingerprint-based build-or-update is Phase 3.
-    - name: Publish OTA update
-      if: ${{ inputs.ota == 'true' }}
+    # Build one platform and WAIT for it to finish (no --no-wait), so the job
+    # goes red if the build fails. --json gives us the build id + final status.
+    - name: EAS build (${{ inputs.platform }})
+      id: build
+      if: ${{ inputs.command == 'build' }}
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: eas update --auto --non-interactive
-
-    # Build mode: always trigger a full EAS build (and submission)
-    - name: Build and submit
-      if: ${{ inputs.ota != 'true' }}
-      shell: bash
-      working-directory: ${{ inputs.working-directory }}
-      run: >
-        eas build
-        --platform ${{ inputs.platform }}
-        --profile ${{ inputs.profile }}
-        --non-interactive
-        ${{ inputs.no-wait == 'true' && '--no-wait' || '' }}
-        ${{ inputs.auto-submit == 'true' && '--auto-submit' || '' }}
-
-    - name: Deployment summary
-      shell: bash
       run: |
+        set -uo pipefail
+        echo "Building ${{ inputs.platform }} with profile ${{ inputs.profile }} (waiting for completion)..."
+        OUT=$(eas build --platform ${{ inputs.platform }} --profile ${{ inputs.profile }} --non-interactive --json) || true
+        printf '%s' "$OUT" > build.json
+        ID=$(node -e "try{const b=require('./build.json');const x=Array.isArray(b)?b[0]:b;process.stdout.write(String((x&&x.id)||''))}catch(e){}")
+        STATUS=$(node -e "try{const b=require('./build.json');const x=Array.isArray(b)?b[0]:b;process.stdout.write(String((x&&x.status)||''))}catch(e){}")
+        echo "build-id=$ID" >> "$GITHUB_OUTPUT"
         {
-          echo "### Expo deploy triggered"
-          echo ""
-          echo "| | |"
-          echo "|---|---|"
-          echo "| Mode | ${{ inputs.ota == 'true' && 'OTA update' || 'build + submit' }} |"
-          echo "| Platform | ${{ inputs.platform }} |"
-          echo "| Profile | ${{ inputs.profile }} |"
-          echo "| Auto-submit | ${{ inputs.auto-submit }} |"
+          echo "### ${{ inputs.platform }} build"
+          echo "- id: \`$ID\`"
+          echo "- status: \`${STATUS:-unknown}\`"
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "Build id: $ID | status: ${STATUS:-unknown}"
+        if [ "$STATUS" != "FINISHED" ]; then
+          echo "::error::${{ inputs.platform }} build did not finish (status: ${STATUS:-unknown})"
+          exit 1
+        fi
+
+    # Submit a previously-built binary and WAIT, so the job reflects the real
+    # submission result (store upload accepted / rejected).
+    - name: EAS submit (${{ inputs.platform }})
+      if: ${{ inputs.command == 'submit' }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -euo pipefail
+        echo "Submitting ${{ inputs.platform }} build ${{ inputs.build-id }} with profile ${{ inputs.profile }}..."
+        eas submit --platform ${{ inputs.platform }} --profile ${{ inputs.profile }} --id "${{ inputs.build-id }}" --non-interactive
+        {
+          echo "### ${{ inputs.platform }} submission"
+          echo "- build id: \`${{ inputs.build-id }}\`"
+          echo "- submitted ✔"
         } >> "$GITHUB_STEP_SUMMARY"
