@@ -1,6 +1,6 @@
 # Expo Deploy Action
 
-Composite GitHub Action that triggers an [EAS](https://expo.dev/eas) build + store submission (or a fingerprint-based OTA update) for an Expo app.
+Composite GitHub Action that triggers an [EAS](https://expo.dev/eas) build + store submission (or a JS-only OTA update) for an Expo app.
 
 Builds run on **Expo's servers** — this action only queues them, so it runs fine on `ubuntu-latest` and finishes in about a minute with the default `no-wait: true`. All signing and store credentials (Android keystore, iOS certificates, App Store Connect API key, Google Play service account) are managed by EAS via `eas credentials`; the only secret this action needs is an Expo access token.
 
@@ -9,7 +9,7 @@ Builds run on **Expo's servers** — this action only queues them, so it runs fi
 - An Expo app already linked to an EAS project (`extra.eas.projectId` in the app config) with build/submit profiles in `eas.json`.
 - All credentials bootstrapped on EAS **before** CI runs (`eas credentials` for both platforms) — `--non-interactive` fails hard on any missing credential.
 - An [Expo access token](https://docs.expo.dev/accounts/programmatic-access/) (robot token recommended) stored as a secret in the calling repository.
-- For `ota: true`: `expo-updates` installed and `runtimeVersion: { "policy": "fingerprint" }` configured.
+- For `ota: true`: `expo-updates` installed and configured (fingerprint-based build-or-update is a Phase 3 enhancement; the current OTA path runs `eas update --auto`).
 
 ## Usage
 
@@ -46,7 +46,7 @@ Most callers should prefer the reusable workflow [`phorus-group/workflows/.githu
 | `platform` | No | `all` | Platform to build: `ios`, `android` or `all` |
 | `profile` | No | `production` | EAS build profile; with auto-submit, the same-named submit profile is used |
 | `auto-submit` | No | `true` | Auto-submit the build to the stores on success |
-| `ota` | No | `false` | Fingerprint-based continuous deploy: OTA update when the native fingerprint is unchanged, build otherwise |
+| `ota` | No | `false` | Publish a JS-only OTA update (`eas update`) instead of a full build |
 | `no-wait` | No | `true` | Exit once the build is queued instead of blocking until it finishes |
 | `eas-version` | No | `latest` | EAS CLI version to install |
 | `working-directory` | No | `.` | Directory containing the Expo app |

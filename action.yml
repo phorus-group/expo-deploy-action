@@ -1,5 +1,5 @@
 name: Expo Deploy Action
-description: Triggers an EAS build/submit (or fingerprint-based OTA update) for an Expo app using the official Expo GitHub Action
+description: Triggers an EAS build/submit (or a JS-only OTA update) for an Expo app using the official Expo GitHub Action
 
 inputs:
   expo-token:
@@ -18,7 +18,7 @@ inputs:
     required: false
     default: "true"
   ota:
-    description: "Use fingerprint-based continuous deploy instead of always building: publishes an OTA update when the native fingerprint is unchanged, builds otherwise. Requires expo-updates and the fingerprint runtimeVersion policy"
+    description: "Publish a JS-only over-the-air update (eas update) instead of running a full build. Requires expo-updates configured in the app. Fingerprint-based build-or-update is a Phase 3 enhancement"
     required: false
     default: "false"
   no-wait:
@@ -54,13 +54,16 @@ runs:
         eas-version: ${{ inputs.eas-version }}
         token: ${{ inputs.expo-token }}
 
-    # OTA mode: hash the native surface; publish an eas update if unchanged, build otherwise
-    - name: Continuous deploy (fingerprint)
+    # OTA mode: publish a JS-only over-the-air update (no store review).
+    # NOTE: implemented as a shell step, not the continuous-deploy-fingerprint
+    # sub-action, because a composite action resolves every `uses:` at job
+    # setup regardless of `if:` — referencing a non-existent sub-action there
+    # fails the whole job. Fingerprint-based build-or-update is Phase 3.
+    - name: Publish OTA update
       if: ${{ inputs.ota == 'true' }}
-      uses: expo/expo-github-action/continuous-deploy-fingerprint@v8
-      with:
-        profile: ${{ inputs.profile }}
-        working-directory: ${{ inputs.working-directory }}
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: eas update --auto --non-interactive
 
     # Build mode: always trigger a full EAS build (and submission)
     - name: Build and submit
@@ -83,7 +86,7 @@ runs:
           echo ""
           echo "| | |"
           echo "|---|---|"
-          echo "| Mode | ${{ inputs.ota == 'true' && 'continuous deploy (fingerprint)' || 'build + submit' }} |"
+          echo "| Mode | ${{ inputs.ota == 'true' && 'OTA update' || 'build + submit' }} |"
           echo "| Platform | ${{ inputs.platform }} |"
           echo "| Profile | ${{ inputs.profile }} |"
           echo "| Auto-submit | ${{ inputs.auto-submit }} |"
